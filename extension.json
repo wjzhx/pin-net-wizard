@@ -1,0 +1,63 @@
+{
+	"name": "pin-net-wizard",
+	"uuid": "65a41b7d57544d88b143e135f9c17003",
+	"displayName": "PCB焊盘改网络",
+	"description": "在 PCB 中选中引脚后按 F8 拾取目标网络 → 一键写入原理图（断开原网络并回填新网络名）→ 自动切回 PCB；支持多组连续拾取后批量写入",
+	"version": "1.0.0",
+	"publisher": "wjzhx",
+	"engines": {
+		"eda": "^3.2.0"
+	},
+	"license": "Apache-2.0",
+	"repository": {
+		"type": "git",
+		"url": ""
+	},
+	"categories": [
+		"PCB"
+	],
+	"keywords": [
+		"网络",
+		"引脚",
+		"原理图",
+		"PCB",
+		"Net",
+		"Pin"
+	],
+	"images": {
+		"logo": "./images/logo.png"
+	},
+	"homepage": "",
+	"bugs": "",
+	"activationEvents": {},
+	"entry": "./dist/index",
+	"dependentExtensions": {},
+	"headerMenus": {
+		"pcb": [
+			{
+				"id": "pin-net-wizard-pcb",
+				"title": "PCB焊盘改网络",
+				"menuItems": [
+					{
+						"id": "pin-net-wizard-open",
+						"title": "打开向导",
+						"registerFn": "openWizard"
+					}
+				]
+			}
+		],
+		"sch": [
+			{
+				"id": "pin-net-wizard-sch",
+				"title": "PCB焊盘改网络",
+				"menuItems": [
+					{
+						"id": "pin-net-wizard-open-sch",
+						"title": "打开向导",
+						"registerFn": "openWizard"
+					}
+				]
+			}
+		]
+	}
+}

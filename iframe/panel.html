@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>引脚改网向导</title>
+<style>
+  :root { --fg:#1f2328; --muted:#6b7280; --line:#e5e7eb; --accent:#2563eb; --danger:#dc2626; --ok:#16a34a; --warn:#b45309; --amber:#f59e0b; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:12px; font:13px/1.55 -apple-system,"Microsoft YaHei",sans-serif; color:var(--fg); }
+  h3 { margin:0 0 4px; font-size:14px; display:flex; align-items:center; gap:8px; }
+  .kbd { font-size:11px; font-weight:400; padding:1px 6px; border:1px solid var(--line); border-bottom-width:2px; border-radius:4px; background:#f8fafc; color:var(--muted); }
+  .sub { color:var(--muted); font-size:12px; margin-bottom:12px; }
+  .step { border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin-bottom:10px; transition:border-color .15s; }
+  .step.done { border-color:var(--ok); }
+  .step.active { border-color:var(--accent); box-shadow:0 0 0 2px #eff6ff; }
+  .step h4 { margin:0 0 6px; font-size:13px; display:flex; align-items:center; gap:6px; }
+  .badge { font-size:11px; padding:1px 6px; border-radius:10px; background:#f3f4f6; color:var(--muted); }
+  .badge.ok { background:#dcfce7; color:var(--ok); }
+  .badge.bad { background:#fee2e2; color:var(--danger); }
+  .row { display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:8px; }
+  button { padding:5px 11px; border:1px solid var(--line); border-radius:6px; background:#fff; cursor:pointer; font-size:12px; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.big { padding:9px 18px; font-size:14px; font-weight:600; }
+  button.mini { padding:1px 7px; font-size:11px; color:var(--danger); border-color:#f3d4d4; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  input[type=text], select { padding:5px 7px; border:1px solid var(--line); border-radius:5px; font-size:12px; width:100%; }
+  code { background:#f3f4f6; padding:1px 5px; border-radius:3px; font-size:12px; }
+  .note { color:var(--muted); font-size:12px; margin-top:6px; }
+  /* 阶段提示：字号放大、色块醒目 */
+  .bigtip { font-size:16px; line-height:1.5; font-weight:700; margin-top:8px; padding:12px 14px; border-radius:8px;
+            background:#eff6ff; border-left:5px solid var(--accent); color:#1e3a8a; }
+  .bigtip .no { display:inline-block; min-width:22px; height:22px; line-height:22px; text-align:center; border-radius:50%;
+                background:var(--accent); color:#fff; font-size:13px; margin-right:6px; }
+  .bigtip.pick2 { background:#fff7ed; border-left-color:var(--amber); color:#92400e; }
+  .bigtip.pick2 .no { background:var(--amber); }
+  .bigtip.done { background:#f0fdf4; border-left-color:var(--ok); color:#166534; }
+  .bigtip.done .no { background:var(--ok); }
+  .bigtip small { display:block; margin-top:4px; font-size:12px; font-weight:400; opacity:.85; }
+  .pininfo { font-size:13px; font-weight:600; margin-top:8px; }
+  .warn { color:var(--warn); font-size:12px; margin-top:6px; }
+  .list { max-height:130px; overflow:auto; border:1px solid var(--line); border-radius:6px; margin-top:8px; }
+  .item { padding:5px 8px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; gap:8px; font-size:12px; }
+  .item:last-child { border-bottom:none; }
+  .item.sel { background:#eff6ff; }
+  .netbig { margin-top:8px; font-size:16px; font-weight:700; color:var(--accent); letter-spacing:.3px; }
+  .netbig.empty { color:var(--muted); font-size:13px; font-weight:400; }
+  .log { margin-top:10px; max-height:170px; overflow:auto; background:#f8fafc; border:1px solid var(--line); border-radius:6px; padding:8px; font-size:12px; white-space:pre-wrap; }
+  .ok{color:var(--ok)} .err{color:var(--danger)} .wn{color:var(--warn)}
+</style>
+</head>
+<body>
+  <h3>引脚改网向导 <span class="kbd" id="hotkeyTip">F8 拾取网络</span></h3>
+  <div class="sub">选原始网络 → 按 F8 → 选替换网络 → 按 F8 → 写入原理图（自动切回 PCB）</div>
+
+  <!-- ① 拾取原始网络 + 替换网络 -->
+  <div class="step active" id="s1">
+    <h4>拾取网络 <span class="badge" id="b1">待操作</span></h4>
+
+    <div class="bigtip" id="hint1">
+      <span class="no">1</span>选择原始网络：在 PCB 中选中要修改的引脚，按 F8
+      <small>也可以直接点下方「拾取选中图元的网络」按钮</small>
+    </div>
+    <div class="pininfo" id="pinInfo" style="display:none"></div>
+
+    <div class="row">
+      <button class="primary" id="btn-pick">拾取选中图元的网络</button>
+      <button id="btn-reset" disabled>重选引脚</button>
+    </div>
+    <div class="row">
+      <label class="note" style="display:flex;align-items:center;gap:5px;margin:0;cursor:pointer">
+        <input type="checkbox" id="multi" checked style="width:auto" />
+        多组模式：连续拾取多组后一次性写入
+      </label>
+    </div>
+    <div class="list" id="list1" style="display:none"></div>
+    <div class="netbig empty" id="netShow"></div>
+    <div class="row" id="netManual" style="display:none"><select id="netSel"></select></div>
+    <div class="row" id="netInputRow" style="display:none"><input type="text" id="netInput" placeholder="或手输替换网络名" /></div>
+    <div class="note" id="netInfo"></div>
+  </div>
+
+  <!-- ② 待写入队列 -->
+  <div class="step" id="s2">
+    <h4>待写入 <span class="badge" id="b2">0 组</span></h4>
+    <div class="list" id="queueList" style="display:none"></div>
+    <div class="note" id="queueEmpty">尚无待写入任务。拾取到替换网络后会自动加入这里。</div>
+    <div class="row">
+      <button class="primary big" id="btn-apply" disabled>写入原理图</button>
+      <button id="btn-clear" disabled>清空</button>
+    </div>
+  </div>
+
+  <div class="warn">写操作为批量修改，执行前请先备份工程（文件 → 备份/另存为）。</div>
+  <div class="log" id="log">就绪。</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+/* stage: idle（待选原始网络） / pin（已读引脚，待选替换网络） / net（都就绪） */
+let S = { picked: [], cur: null, net: '', stage: 'idle', multi: true };
+/* 待写入队列：{ designator, padNumber, fromNet, net } */
+let Q = [];
+
+function log(m, c) {
+  const t = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  $('log').innerHTML += `\n[${t}] <span class="${c || ''}">${m}</span>`;
+  $('log').scrollTop = $('log').scrollHeight;
+}
+function mark(id, text, cls) {
+  const b = $(id); b.textContent = text;
+  b.className = 'badge' + (cls ? ' ' + cls : '');
+}
+function stepCls(id, cls) { $(id).className = 'step' + (cls ? ' ' + cls : ''); }
+function who() { return S.cur ? `${S.cur.designator}.${S.cur.padNumber}` : ''; }
+function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+/* ---- 阶段提示（大字） ---- */
+function tip(stage, extra) {
+  const box = $('hint1');
+  if (stage === 'pick1') {
+    box.className = 'bigtip';
+    box.innerHTML = `<span class="no">1</span>选择原始网络：在 PCB 中选中要修改的引脚，按 F8`
+      + `<small>也可以直接点下方「拾取选中图元的网络」按钮</small>`;
+  } else if (stage === 'pick2') {
+    box.className = 'bigtip pick2';
+    box.innerHTML = `<span class="no">2</span>选择替换网络：在 PCB 中选中要改成的目标网络，按 F8`
+      + `<small>${extra || '焊盘 / 导线 / 过孔均可，选中后按 F8 即可拾取该网络'}</small>`;
+  } else {
+    box.className = 'bigtip done';
+    box.innerHTML = extra || '';
+  }
+}
+
+/* ---- 宿主通信 ---- */
+const HAS_RPC = typeof eda !== 'undefined' && eda?.sys_MessageBus?.rpcCall;
+
+async function call2(cmd, payload) {
+  const rpcName = 'pinNetWizard.' + cmd;
+  if (HAS_RPC) {
+    try {
+      return await eda.sys_MessageBus.rpcCall(rpcName, payload ?? {});
+    } catch (e) {
+      return { error: 'RPC 调用失败: ' + (e?.message ?? e) };
+    }
+  }
+  return new Promise((resolve) => {
+    const reqId = ++seq;
+    pending.set(reqId, resolve);
+    window.parent.postMessage({ cmd, payload, reqId }, '*');
+    setTimeout(() => {
+      if (pending.has(reqId)) { pending.delete(reqId); resolve({ error: '超时：宿主未响应 ' + cmd }); }
+    }, 60000);
+  });
+}
+let seq = 0;
+const pending = new Map();
+window.addEventListener('message', (ev) => {
+  const { reqId, result } = ev.data || {};
+  const fn = pending.get(reqId);
+  if (!fn) return;
+  pending.delete(reqId);
+  fn(result);
+});
+
+/* ---- 快捷键状态 + 事件轮询（宿主 F8 回调只投递事件，面板负责执行） ---- */
+(async () => {
+  const r = await call2('hotkey', null);
+  if (r && r.registered === false) {
+    $('hotkeyTip').textContent = 'F8 注册失败，请用按钮';
+    $('hotkeyTip').style.color = 'var(--warn)';
+  }
+})();
+
+/* 150ms 轮询：F8 由宿主投递事件，轮询间隔直接决定按键后的延迟。
+   上一次未返回时跳过本轮，避免 RPC 堆积。 */
+let lastPickAt = 0;
+let polling = false;
+setInterval(async () => {
+  if (polling) return;
+  polling = true;
+  try {
+    const r = await call2('poll', null);
+    const events = (r && r.events) || [];
+    for (const e of events) {
+      if (e.type !== 'pick') continue;
+      if (Date.now() - lastPickAt < 500) continue;
+      lastPickAt = Date.now();
+      doPick();
+    }
+  } finally {
+    polling = false;
+  }
+}, 150);
+
+/* ---- 主按钮：两阶段（选原始网络 → 选替换网络） ---- */
+function doPick() {
+  if (S.stage === 'pin') return pickTargetNet();
+  if (S.stage === 'net') log('重新选择原始网络，已选替换网络将被清空。', 'wn');
+  return pickPin();
+}
+$('btn-pick').onclick = () => doPick();
+
+async function pickPin() {
+  log('读取 PCB 选中引脚（原始网络）…');
+  const r = await call2('step1', null);
+  if (r.error) { log(r.error, 'err'); mark('b1', '读取失败', 'bad'); return; }
+
+  S.picked = r.picked;
+  S.cur = r.picked[0];
+  S.net = '';
+  S.stage = 'pin';
+
+  renderPins();
+  $('list1').style.display = r.picked.length > 1 ? '' : 'none';
+  $('btn-reset').disabled = false;
+  $('netManual').style.display = '';
+  $('netInputRow').style.display = '';
+  mark('b1', '已选原始网络', 'ok');
+  stepCls('s1', 'active');
+
+  showPinInfo();
+  tip('pick2', `引脚 ${who()}（原网络 ${S.cur.net || '空'}）已就绪`);
+  updateNetShow();
+  log(`已读取 ${r.picked.length} 个引脚：${r.pinKeys.join(', ')}`, 'ok');
+  // 网络下拉按需加载，不阻塞按键响应
+  setTimeout(() => { void loadNets(); }, 0);
+}
+
+async function pickTargetNet() {
+  log('读取 PCB 选中图元（替换网络）…');
+  const r = await call2('step3', null);
+  if (r.error) { log(r.error, 'err'); mark('b1', '拾取失败', 'bad'); return; }
+
+  setNet(r.net);
+  S.stage = 'net';
+  mark('b1', '已选替换网络', 'ok');
+  stepCls('s1', 'done');
+  stepCls('s2', 'active');
+  log(`替换网络 <code>${r.net}</code>（来源：${r.source}）`, 'ok');
+  if (S.cur && S.cur.net === r.net) log(`注意：替换网络与 ${who()} 的原网络相同，写入不会有变化。`, 'wn');
+  $('netInfo').textContent = `网络来源：${r.source}`;
+
+  enqueue();
+}
+
+function showPinInfo() {
+  const el = $('pinInfo');
+  if (!S.cur) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  el.innerHTML = `当前引脚：<code>${esc(who())}</code>　原网络：<b>${esc(S.cur.net || '空')}</b>`;
+}
+
+/* ---- 队列 ---- */
+function enqueue() {
+  if (!S.cur || !S.net) return;
+  const task = { designator: S.cur.designator, padNumber: S.cur.padNumber, fromNet: S.cur.net || '', net: S.net };
+  if (S.multi) {
+    const i = Q.findIndex((t) => t.designator === task.designator && t.padNumber === task.padNumber);
+    if (i >= 0) Q[i] = task; else Q.push(task);
+  } else {
+    Q = [task];
+  }
+  renderQueue();
+  log(`已加入待写入：${task.designator}.${task.padNumber} ${task.fromNet || '空'} → ${task.net}（共 ${Q.length} 组）`, 'ok');
+
+  if (S.multi) {
+    const done = `${task.designator}.${task.padNumber}：${task.fromNet || '空'} → ${task.net}`;
+    resetCurrent();
+    tip('pick1');
+    $('hint1').innerHTML = `<span class="no">1</span>选择原始网络：在 PCB 中选中下一个引脚，按 F8`
+      + `<small>已加入队列 ${Q.length} 组（最近：${esc(done)}）。全部拾取完后点下方「一次性写入」</small>`;
+    mark('b1', '可继续拾取', 'ok');
+  } else {
+    tip('done', `<span class="no">✓</span>已就绪：${esc(who())} 将从 ${esc(S.cur.net || '空')} 改为 ${esc(S.net)}`
+      + `<small>确认无误后点下方「写入原理图」</small>`);
+  }
+}
+
+function renderQueue() {
+  const has = Q.length > 0;
+  $('queueList').style.display = has ? '' : 'none';
+  $('queueEmpty').style.display = has ? 'none' : '';
+  $('queueList').innerHTML = Q.map((t, i) => `
+    <div class="item">
+      <span><code>${esc(t.designator)}.${esc(t.padNumber)}</code>：${esc(t.fromNet || '空')} → <b>${esc(t.net)}</b></span>
+      <button class="mini" data-i="${i}">删除</button>
+    </div>`).join('');
+  $('queueList').querySelectorAll('button.mini').forEach((el) => {
+    el.onclick = () => {
+      const i = Number(el.dataset.i);
+      log(`已移除 ${Q[i].designator}.${Q[i].padNumber}`, 'wn');
+      Q.splice(i, 1);
+      renderQueue();
+    };
+  });
+  mark('b2', `${Q.length} 组`, Q.length ? 'ok' : '');
+  const btn = $('btn-apply');
+  btn.disabled = !Q.length;
+  btn.textContent = Q.length > 1 ? `一次性写入（${Q.length} 组）` : '写入原理图';
+  $('btn-clear').disabled = !Q.length;
+}
+
+$('btn-clear').onclick = () => {
+  Q = [];
+  renderQueue();
+  log('已清空待写入队列。', 'wn');
+};
+
+$('multi').onchange = () => {
+  S.multi = $('multi').checked;
+  if (!S.multi && Q.length > 1) {
+    Q = Q.slice(-1);
+    renderQueue();
+    log('已退出多组模式，队列只保留最后一条。', 'wn');
+  }
+  log(S.multi ? '多组模式：拾取后自动入队并继续下一组。' : '单组模式。');
+};
+
+/* ---- 引脚列表 ---- */
+function renderPins() {
+  $('list1').innerHTML = S.picked.map((p, i) => `
+    <div class="item${p === S.cur ? ' sel' : ''}" data-i="${i}">
+      <span><code>${esc(p.designator)}.${esc(p.padNumber)}</code></span>
+      <span>${p.net ? esc(p.net) : '<span class="wn">空网络</span>'}</span>
+    </div>`).join('');
+  $('list1').querySelectorAll('.item').forEach((el) => {
+    el.onclick = () => {
+      $('list1').querySelectorAll('.item').forEach((x) => x.classList.remove('sel'));
+      el.classList.add('sel');
+      S.cur = S.picked[Number(el.dataset.i)];
+      S.stage = 'pin';
+      S.net = '';
+      const i = Q.findIndex((t) => t.designator === S.cur.designator && t.padNumber === S.cur.padNumber);
+      if (i >= 0) { Q.splice(i, 1); renderQueue(); }
+      mark('b1', '已选原始网络', 'ok');
+      showPinInfo();
+      tip('pick2', `引脚 ${who()}（原网络 ${S.cur.net || '空'}）已就绪`);
+      updateNetShow();
+      log(`已选择 ${who()}（原网络 ${S.cur.net || '空'}）`);
+    };
+  });
+}
+
+/* 只清空当前引脚状态，保留队列 */
+function resetCurrent() {
+  S.picked = [];
+  S.cur = null;
+  S.net = '';
+  S.stage = 'idle';
+  $('list1').style.display = 'none';
+  $('list1').innerHTML = '';
+  $('netManual').style.display = 'none';
+  $('netInputRow').style.display = 'none';
+  $('netInfo').textContent = '';
+  $('netInput').value = '';
+  $('netSel').value = '';
+  $('btn-reset').disabled = true;
+  $('pinInfo').style.display = 'none';
+  updateNetShow();
+}
+
+$('btn-reset').onclick = () => {
+  resetCurrent();
+  mark('b1', '待操作');
+  stepCls('s1', 'active');
+  tip('pick1');
+};
+
+/* ---- 网络展示 / 兜底下拉与手输 ---- */
+let netsLoaded = false;
+async function loadNets() {
+  if (netsLoaded) return;
+  netsLoaded = true;
+  const r = await call2('listNets', null);
+  if (r.error || !r.nets) { netsLoaded = false; return; }
+  $('netSel').innerHTML = `<option value="">— 选择网络 —</option>` +
+    r.nets.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+}
+$('netSel').onfocus = () => { void loadNets(); };
+$('netSel').onchange = () => { if ($('netSel').value) { setNet($('netSel').value); S.stage = 'net'; enqueue(); } };
+/* 手输为兜底：失焦或回车时提交一次，避免逐字入队 */
+$('netInput').oninput = () => {
+  S.net = $('netInput').value.trim();
+  updateNetShow();
+};
+$('netInput').onchange = () => {
+  const v = $('netInput').value.trim();
+  if (!v || !S.cur) return;
+  setNet(v);
+  S.stage = 'net';
+  enqueue();
+};
+
+function setNet(n) {
+  S.net = n;
+  if ($('netInput').value !== n) $('netInput').value = n; // 程序赋值不会触发 oninput
+  updateNetShow();
+}
+
+function updateNetShow() {
+  const show = $('netShow');
+  if (S.cur && S.net) {
+    show.textContent = `${who()}：${S.cur.net || '空'} → ${S.net}`;
+    show.className = 'netbig';
+  } else if (S.cur) {
+    show.textContent = `${who()}：${S.cur.net || '空'} → （等待选择替换网络）`;
+    show.className = 'netbig empty';
+  } else {
+    show.textContent = '';
+    show.className = 'netbig empty';
+  }
+}
+
+/* ---- 写入（单组 / 多组统一走批量接口） ---- */
+$('btn-apply').onclick = async () => {
+  if (!Q.length) return;
+  const tasks = Q.map((t) => ({ designator: t.designator, padNumber: t.padNumber, net: t.net }));
+  $('btn-apply').disabled = true;
+  mark('b2', '处理中…');
+  log(`开始写入 ${tasks.length} 组…`);
+
+  const r = await call2('applyBatch', { tasks });
+  if (r.error) {
+    mark('b2', '失败', 'bad');
+    stepCls('s2', '');
+    log(r.error, 'err');
+    $('btn-apply').disabled = false;
+    return;
+  }
+
+  for (const x of r.results || []) {
+    const head = `${x.designator}.${x.padNumber} → ${x.net}`;
+    if (x.error) {
+      log(`✗ ${head}：${x.error}`, 'err');
+      continue;
+    }
+    log(`✓ ${head}：删 ${x.removed} 段导线，回读网络 ${x.actualNet}${x.matched ? '' : '（与目标不一致）'}`, x.matched ? 'ok' : 'wn');
+    (x.restored || []).forEach((n) => log(`    邻居 ${n.designator}.${n.pinNumber} 已按原网络 ${n.net} 补回引出线`, 'ok'));
+  }
+  log(r.saved ? '原理图已统一保存。' : '注意：原理图保存失败，请手动保存。', r.saved ? 'ok' : 'wn');
+  log(r.switchedBack ? '已切回 PCB 页面。' : '写入完成，但自动切回 PCB 失败，请手动点一下 PCB 标签页。', r.switchedBack ? 'ok' : 'wn');
+
+  mark('b2', `成功 ${r.okCount}/${r.total}`, r.okCount === r.total ? 'ok' : 'bad');
+  stepCls('s2', r.okCount ? 'done' : '');
+
+  Q = [];
+  renderQueue();
+  resetCurrent();
+  stepCls('s1', 'active');
+  tip('done', `<span class="no">✓</span>本次完成 ${r.okCount}/${r.total} 组`
+    + `<small>继续改网请选中下一个引脚，按 F8</small>`);
+  mark('b1', '可继续下一个', 'ok');
+};
+
+renderQueue();
+</script>
+</body>
+</html>
