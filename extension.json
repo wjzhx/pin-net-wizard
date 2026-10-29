@@ -2,7 +2,7 @@
 	"name": "pin-net-wizard",
 	"uuid": "65a41b7d57544d88b143e135f9c17003",
 	"displayName": "PCB焊盘改网络",
-	"description": "在 PCB 中选中引脚后按 F8 拾取目标网络 → 一键写入原理图（断开原网络并回填新网络名）→ 自动切回 PCB；支持多组连续拾取后批量写入",
+	"description": "在 PCB 中选中引脚，按 F8 拾取目标网络，一键改写原理图中已经命名的网络标签",
 	"version": "1.0.0",
 	"publisher": "wjzhx",
 	"engines": {
