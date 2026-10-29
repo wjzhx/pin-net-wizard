@@ -413,7 +413,7 @@ function updateNetShow() {
 /* ---- 写入（单组 / 多组统一走批量接口） ---- */
 $('btn-apply').onclick = async () => {
   if (!Q.length) return;
-  const tasks = Q.map((t) => ({ designator: t.designator, padNumber: t.padNumber, net: t.net }));
+  const tasks = Q.map((t) => ({ designator: t.designator, padNumber: t.padNumber, net: t.net, fromNet: t.fromNet || '' }));
   $('btn-apply').disabled = true;
   mark('b2', '处理中…');
   log(`开始写入 ${tasks.length} 组…`);
@@ -433,20 +433,25 @@ $('btn-apply').onclick = async () => {
       log(`✗ ${head}：${x.error}`, 'err');
       continue;
     }
-    log(`✓ ${head}：删 ${x.removed} 段导线，回读网络 ${x.actualNet}${x.matched ? '' : '（与目标不一致）'}`, x.matched ? 'ok' : 'wn');
-    (x.restored || []).forEach((n) => log(`    邻居 ${n.designator}.${n.pinNumber} 已按原网络 ${n.net} 补回引出线`, 'ok'));
+    if (x.skipped) {
+      log(`− ${head}：跳过（${x.reason || '没有可修改的网络标签'}）`, 'wn');
+      continue;
+    }
+    log(`✓ ${head}：网络标签改名 ${x.netBefore || '空'} → ${x.net}${x.matched ? '' : '；回读与目标不一致'}`, x.matched ? 'ok' : 'wn');
   }
-  log(r.saved ? '原理图已统一保存。' : '注意：原理图保存失败，请手动保存。', r.saved ? 'ok' : 'wn');
+  if (!r.changed) log('本次没有任何改动（全部跳过），原理图未修改。', 'wn');
+  else log(r.saved ? '原理图已统一保存。' : '注意：原理图保存失败，请手动保存。', r.saved ? 'ok' : 'wn');
   log(r.switchedBack ? '已切回 PCB 页面。' : '写入完成，但自动切回 PCB 失败，请手动点一下 PCB 标签页。', r.switchedBack ? 'ok' : 'wn');
 
-  mark('b2', `成功 ${r.okCount}/${r.total}`, r.okCount === r.total ? 'ok' : 'bad');
+  const suffix = (r.skipCount ? `，跳过 ${r.skipCount}` : '') + (r.failCount ? `，失败 ${r.failCount}` : '');
+  mark('b2', `成功 ${r.okCount}/${r.total}${r.skipCount ? ` 跳过 ${r.skipCount}` : ''}`, r.failCount ? 'bad' : 'ok');
   stepCls('s2', r.okCount ? 'done' : '');
 
   Q = [];
   renderQueue();
   resetCurrent();
   stepCls('s1', 'active');
-  tip('done', `<span class="no">✓</span>本次完成 ${r.okCount}/${r.total} 组`
+  tip('done', `<span class="no">✓</span>成功 ${r.okCount}/${r.total}${suffix}`
     + `<small>继续改网请选中下一个引脚，按 F8</small>`);
   mark('b1', '可继续下一个', 'ok');
 };

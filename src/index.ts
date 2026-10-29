@@ -1,11 +1,13 @@
 /**
  * 引脚改网向导 —— 宿主入口
  *
- * 四步流程：
- *   ① PCB 选中封装引脚  → 原理图交叉高亮该引脚
- *   ② 移除原理图中该引脚的网络（断开原有电气连接，按原网络给邻居补线）
- *   ③ PCB 中拾取目标网络（点焊盘 / 导线取网络，并高亮该网络全部图元）
- *   ④ 原理图该引脚重建引出导线并写入新网络名
+ * 流程：
+ *   ① PCB 选中封装引脚  → 读取位号 / 脚号 / 原网络
+ *   ② PCB 中拾取目标网络（点焊盘 / 导线 / 过孔取网络）
+ *   ③ 原理图改网：只改「网络标签」的文字（= 整条网络换名）
+ *        导线全程只读：不新建、不删除、不拆分、不改写
+ *        网络上没有网络标签 → 跳过该任务，不做任何修改
+ *   ④ 批量改网：多组任务只切换一次文档、只保存一次
  *
  * 依赖：@jlceda/pro-api-types
  * 警告：pcb_PrimitivePad / sch_PrimitiveWire / *_SelectControl 均为 BETA 接口，
@@ -17,10 +19,8 @@
 
 const PANEL_ID = 'pin-net-wizard';
 const TOL = 5; // 原理图引脚落点判定容差（SCH 单位 10mil，5 = 50mil）
-const STUB_LEN = 40; // 引出导线长度（40 = 400mil ≈ 0.4 inch）
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-const key = (p: any) => `${p.designator}_${p.pinNumber}`;
 /** 最近一次查找关联原理图的诊断信息，失败时回显给面板 */
 let linkDiag = '';
 
@@ -133,103 +133,92 @@ export async function step1_readPcbPins(): Promise<any> {
 }
 
 /* ================================================================== *
- * ② 移除原理图指定引脚的网络
- *    策略：删掉所有接触该引脚的导线 → 引脚悬空
- *          对因删除而悬空的「邻居引脚」按原网络名补一段引出短线，保住其网络
+ * ② 原理图引脚改网：只改「网络标签」的名字
+ *
+ *   规则：
+ *     网络标签 = 当前图页上文字等于「原网络名」的属性图元
+ *     （PCB 网络名与原理图未修改前的网络名一致，直接按名字精确匹配）
+ *     找到 → 改标签文字（= 整条网络换名，导线一根不动）
+ *     找不到 → 跳过该任务，不做任何修改
+ *
+ *   全程不新建、不删除、不拆分、不改写任何导线（导线只读）
  * ================================================================== */
-export async function step2_removeSchNet(
-	designator: string,
-	padNumber: string,
-): Promise<any> {
-	const ctx = await openSchematicAndFind(designator, padNumber);
-	if (ctx.error)
-		return ctx;
-	return removeNetAtPin(ctx, designator, padNumber, true); // 单步接口调用后立即落盘
-}
 
 /**
- * 在已定位好引脚的原理图上下文中，断开该引脚与原有导线的连接
+ * 单个引脚改网的完整动作
  *
  * @param ctx 已定位到引脚的原理图上下文
- * @param designator 器件位号
- * @param padNumber 引脚号
- * @param save 是否立即保存；批量流程传 false，由调用方在全部写完后统一保存
+ * @param newNet 目标网络名
+ * @param fromNet 原始网络名（PCB 侧读到的名称，与原理图未修改前完全一致）
+ * @returns mode='label' 表示已改标签；mode='skip' 表示没有网络标签已跳过；定位/写入失败返回 error
  */
-async function removeNetAtPin(
-	ctx: any,
-	designator: string,
-	padNumber: string,
-	save = false,
-): Promise<any> {
-	const { comp, pin } = ctx;
-	const allPinPts = await collectAllPinPoints();
+async function applyNetAtPin(ctx: any, newNet: string, fromNet = ''): Promise<any> {
+	const { pin, designator, pinNumber } = ctx;
+	const pinKey = `${designator}_${pinNumber}`;
+	const netOf = (w: any) => w.getState_Net?.() ?? '';
 
-	// SCH_PrimitiveWire 没有 getAll()，只能先取 ID 再批量取图元
-	const wireIds: string[] = (await eda.sch_PrimitiveWire.getAllPrimitiveId()) ?? [];
-	const wires: any[] = wireIds.length ? ((await eda.sch_PrimitiveWire.get(wireIds)) ?? []) : [];
-
-	// 分类：接触到目标引脚的导线 / 其余导线
-	const touching: any[] = [];
-	const others: any[] = [];
-	for (const w of wires) {
-		(touchesPin(w, pin) ? touching : others).push(w);
+	// 原网络名：PCB 侧传入的优先（两侧未修改前同名）；没传时读引脚上导线的 net
+	let oldNet = fromNet;
+	if (!oldNet) {
+		const wires = await getAllWires();
+		oldNet = wires.filter((w: any) => touchesPin(w, pin)).map(netOf).find(n => n) || '';
 	}
 
-	if (!touching.length) {
-		return { ok: true, removed: 0, note: '该引脚在原理图上本就没有导线连接，无需移除' };
+	if (!oldNet) {
+		return {
+			ok: true,
+			mode: 'skip',
+			skipped: true,
+			netBefore: '',
+			net: '',
+			matched: false,
+			reason: `${pinKey} 读不到原网络名，已跳过（未做任何修改）`,
+		};
 	}
 
-	// 记录被删导线另一端的邻居引脚及其原网络，用于补线
-	// 注意：必须按「位号_引脚号」比较，不能用对象引用 —— allPinPts 里的点是新建的字面量
-	const targetKey = `${designator}_${padNumber}`;
-	const orphan: Array<{ pin: any; net: string }> = [];
-	for (const w of touching) {
-		const line: number[] = w.getState_Line?.() ?? [];
-		const net = w.getState_Net?.() ?? '';
-		for (let i = 0; i + 1 < line.length; i += 2) {
-			const hit = findPinAt(line[i], line[i + 1], allPinPts);
-			if (hit && key(hit) !== targetKey)
-				orphan.push({ pin: hit, net });
-		}
+	// 网络标签：名字 == 原网络名的属性图元
+	const { hits: labels, diag } = await findNetLabels(oldNet);
+	if (!labels.length) {
+		return {
+			ok: true,
+			mode: 'skip',
+			skipped: true,
+			netBefore: oldNet,
+			net: oldNet,
+			matched: false,
+			reason: `原理图中没有名为 ${oldNet} 的网络标签，已跳过（${diag}）`,
+		};
 	}
 
-	// 判定邻居是否还留在别的导线上（留着就不补）
-	const stillConnected = new Set<string>();
-	for (const o of orphan) {
-		for (const w of others) {
-			if (touchesPin(w, o.pin))
-				stillConnected.add(key(o.pin));
-		}
-	}
-
-	const removedIds = touching.map(w => w.getState_PrimitiveId());
-	await eda.sch_PrimitiveWire.delete(removedIds);
-
-	// 删除后等拓扑刷新，否则紧接着在引脚同位置建线会被判「位置已占用」
-	if (removedIds.length)
-		await sleep(120);
-
-	// 给真正悬空的邻居补一段引出短线，恢复原网络
-	const restored: Array<{ designator: string; pinNumber: string; net: string }> = [];
-	const done = new Set<string>();
-	for (const o of orphan) {
-		const k = key(o.pin);
-		if (stillConnected.has(k) || done.has(k))
+	// 只改标签文字（名字放在 key 上的版本，key 一起改）
+	const renamed: string[] = [];
+	for (const a of labels) {
+		const id = a.getState_PrimitiveId?.();
+		if (!id)
 			continue;
-		done.add(k);
-		const id = await createStub(o.pin.x, o.pin.y, o.net);
-		if (id)
-			restored.push({ designator: o.pin.designator, pinNumber: o.pin.pinNumber, net: o.net });
+		const prop: any = { value: newNet };
+		if (String(a.getState_Key?.() ?? '') === oldNet)
+			prop.key = newNet;
+		try {
+			await eda.sch_PrimitiveAttribute.modify(id, prop);
+			renamed.push(id);
+		}
+		catch { /* 单个标签失败不影响其它 */ }
 	}
 
-	if (save)
-		await saveSch();
+	if (!renamed.length)
+		return { error: `${pinKey} 的网络标签改名失败（未做任何修改）` };
+
+	const values = await Promise.all(renamed.map(id => readLabelValue(id)));
+
 	return {
 		ok: true,
-		removed: removedIds.length,
-		removedIds,
-		restored,
-		compId: comp.getState_PrimitiveId(),
+		mode: 'label',
+		renamed: renamed.length,
+		netBefore: oldNet,
+		net: values[0] ?? newNet,
+		matched: values.every(v => v === newNet),
+		labelIds: renamed,
 	};
 }
 
@@ -318,49 +307,14 @@ export async function step4_writeSchNet(
 	const ctx = await openSchematicAndFind(designator, padNumber);
 	if (ctx.error)
 		return ctx;
-	return writeNetAtPin(ctx.pin, newNet);
-}
-
-/**
- * 在已定位好引脚的原理图上下文中，从该引脚引出独占短线并写入网络名
- * 注意：这里刻意不做交叉高亮 —— cross probe 会联动到 PCB，让对应网络走线被高亮
- */
-async function writeNetAtPin(pin: any, newNet: string, save = true): Promise<any> {
-	const wireId = await createStub(pin.x, pin.y, newNet);
-	if (!wireId)
-		return { error: '新建引出导线失败：该位置可能已被占用' };
-
-	if (save)
-		await eda.sch_Document.save();
-
-	let actual = await readWireNet(wireId);
-
-	// 建线时网络名偶尔因拓扑刷新被忽略，补一次 modify 再回读
-	if (actual !== newNet) {
-		try {
-			await eda.sch_PrimitiveWire.modify(wireId, { net: newNet });
-			actual = (await readWireNet(wireId)) ?? actual;
-		}
-		catch { /* 保持原回读结果 */ }
-	}
-
-	return { ok: true, wireId, net: actual, matched: actual === newNet };
-}
-
-/** 回读导线当前网络名 */
-async function readWireNet(wireId: string): Promise<string | undefined> {
-	try {
-		const created: any = await eda.sch_PrimitiveWire.get([wireId]);
-		const obj = Array.isArray(created) ? created[0] : created;
-		return obj?.getState_Net?.();
-	}
-	catch {
-		return undefined;
-	}
+	const res = await applyNetAtPin(ctx, newNet);
+	if (res.mode === 'label')
+		await saveSch(); // 跳过的情况没有改动，不必写盘
+	return res;
 }
 
 /* ================================================================== *
- * 一键改网：断开原理图原网络 → 写入目标网络 → 切回 PCB
+ * 一键改网：改原理图网络标签 → 切回 PCB
  * ================================================================== */
 export async function applyNet(
 	designator: string,
@@ -382,29 +336,11 @@ export async function applyNet(
 		return ctx;
 	}
 
-	const rm = await removeNetAtPin(ctx, designator, padNumber);
-	if (rm.error) {
-		await finishOnPcb(pcbUuid);
-		return rm;
-	}
-
-	const wr = await writeNetAtPin(ctx.pin, newNet, false);
-	const saved = await saveSch(); // 全部改动落盘后再切走
+	const res = await applyNetAtPin(ctx, newNet);
+	const saved = res.mode === 'label' ? await saveSch() : false; // 全部改动落盘后再切走
 	const switchedBack = await finishOnPcb(pcbUuid);
 
-	if (wr.error)
-		return { ...wr, removed: rm.removed, restored: rm.restored ?? [], saved, switchedBack };
-
-	return {
-		ok: true,
-		removed: rm.removed,
-		restored: rm.restored ?? [],
-		wireId: wr.wireId,
-		net: wr.net,
-		matched: wr.matched,
-		saved,
-		switchedBack,
-	};
+	return { ...res, saved, switchedBack };
 }
 
 /** 一组待执行的改网任务 */
@@ -412,6 +348,8 @@ export interface IPinNetTask {
 	designator: string;
 	padNumber: string;
 	net: string;
+	/** PCB 侧读到的原网络名（与原理图未修改前的网络名一致），用于定位网络标签 */
+	fromNet?: string;
 }
 
 /**
@@ -426,34 +364,56 @@ export async function applyBatch(tasks: Array<IPinNetTask>): Promise<any> {
 	const pcbUuid = await getPcbDocUuid();
 	const results: any[] = [];
 
+	// 改的是网络标签，同一网络被多组引用时后一组不必重复改：记录「旧网络 → 新网络」
+	const doneNets = new Map<string, string>();
+
 	for (const t of list) {
+		const prev = t.fromNet ? doneNets.get(t.fromNet) : undefined;
+		if (prev) {
+			results.push({
+				...t,
+				mode: 'skip',
+				skipped: true,
+				renamed: 0,
+				netBefore: t.fromNet,
+				actualNet: prev,
+				matched: prev === t.net,
+				reason: prev === t.net
+					? `原网络 ${t.fromNet} 的网络标签已随上一组改为 ${prev}，本组无需重复`
+					: `原网络 ${t.fromNet} 已随上一组改为 ${prev}，本组目标 ${t.net} 无法再套用`,
+			});
+			continue;
+		}
+
 		const ctx = await openSchematicAndFind(t.designator, t.padNumber);
 		if (ctx.error) {
 			results.push({ ...t, error: ctx.error });
 			continue;
 		}
-		const rm = await removeNetAtPin(ctx, t.designator, t.padNumber);
-		if (rm.error) {
-			results.push({ ...t, error: rm.error });
-			continue;
-		}
-		const wr = await writeNetAtPin(ctx.pin, t.net, false);
+		const r = await applyNetAtPin(ctx, t.net, t.fromNet);
+		if (r.mode === 'label' && r.netBefore)
+			doneNets.set(r.netBefore, t.net);
 		results.push({
 			...t,
-			removed: rm.removed,
-			restored: rm.restored ?? [],
-			wireId: wr.wireId,
-			actualNet: wr.net,
-			matched: wr.matched,
-			error: wr.error,
+			mode: r.mode,
+			skipped: r.skipped ?? false,
+			renamed: r.renamed ?? 0,
+			netBefore: r.netBefore ?? '',
+			reason: r.reason,
+			actualNet: r.net,
+			matched: r.matched,
+			error: r.error,
 		});
 	}
 
-	// 全部组处理完只保存一次，避免每组都写盘
-	const saved = results.some(r => !r.error) ? await saveSch() : false;
+	// 全部组处理完只保存一次；全部跳过时没有改动，不必写盘
+	const okCount = results.filter(r => !r.error && r.mode === 'label').length;
+	const skipCount = results.filter(r => !r.error && r.skipped).length;
+	const failCount = results.filter(r => r.error).length;
+	const changed = okCount > 0;
+	const saved = changed ? await saveSch() : false;
 	const switchedBack = await finishOnPcb(pcbUuid);
-	const okCount = results.filter(r => !r.error && r.matched).length;
-	return { ok: okCount === results.length, total: results.length, okCount, results, saved, switchedBack };
+	return { ok: !failCount, total: results.length, okCount, skipCount, failCount, changed, results, saved, switchedBack };
 }
 
 /* ================================================================== *
@@ -464,7 +424,6 @@ export function registerBridge() {
 	const handlers: Record<string, (payload: any) => Promise<any>> = {
 		'pinNetWizard.listNets': async () => listPcbNets(),
 		'pinNetWizard.step1': async () => step1_readPcbPins(),
-		'pinNetWizard.step2': async p => step2_removeSchNet(p.designator, p.padNumber),
 		'pinNetWizard.step3': async () => step3_pickTargetNet(),
 		'pinNetWizard.step4': async p => step4_writeSchNet(p.designator, p.padNumber, p.net),
 		'pinNetWizard.apply': async p => applyNet(p.designator, p.padNumber, p.net),
@@ -570,9 +529,6 @@ export function registerPostMessageFallback() {
 			switch (cmd) {
 				case 'step1':
 					result = await step1_readPcbPins();
-					break;
-				case 'step2':
-					result = await step2_removeSchNet(payload.designator, payload.padNumber);
 					break;
 				case 'step3':
 					result = await step3_pickTargetNet();
@@ -748,26 +704,6 @@ async function openSchematicAndFind(designator: string, padNumber: string): Prom
 	return { error: `原理图中未找到 ${designator} 的第 ${padNumber} 脚` };
 }
 
-/** 收集当前原理图页全部引脚坐标 */
-async function collectAllPinPoints(): Promise<any[]> {
-	const pts: any[] = [];
-	const comps: any[] = (await eda.sch_PrimitiveComponent.getAll()) ?? [];
-	for (const c of comps) {
-		const dsgn = c.getState_Designator?.() ?? '';
-		const pins: any[] = (await eda.sch_PrimitiveComponent.getAllPinsByPrimitiveId(c.getState_PrimitiveId())) ?? [];
-		for (const p of pins) pts.push({ x: pinX(p), y: pinY(p), designator: dsgn, pinNumber: pinNo(p) });
-	}
-	return pts;
-}
-
-function findPinAt(x: number, y: number, pts: any[]): any | null {
-	for (const p of pts) {
-		if (Math.abs(p.x - x) <= TOL && Math.abs(p.y - y) <= TOL)
-			return p;
-	}
-	return null;
-}
-
 /** 导线任一端点落在引脚上即视为接触 */
 function touchesPin(wire: any, pin: any): boolean {
 	const line: number[] = wire.getState_Line?.() ?? [];
@@ -778,30 +714,71 @@ function touchesPin(wire: any, pin: any): boolean {
 	return false;
 }
 
-/**
- * 从引脚引一段水平短线并赋网络名，效果等价于在引脚上放置网络标签
- *
- * 为什么需要重试：删除该引脚原有导线后，EDA 内部拓扑刷新有延迟，
- * 紧接着在同一坐标 create 会被判「位置已被占用」（批量连续改网时最容易触发，
- * 表现为同一引脚第一次失败、第二次成功）。故按 方向 × 长度 × 轮次 重试。
- */
-async function createStub(x: number, y: number, net: string): Promise<string | undefined> {
-	const lens = [STUB_LEN, Math.round(STUB_LEN * 1.5), Math.round(STUB_LEN * 0.8)];
-	for (let round = 0; round < 3; round++) {
-		for (const dir of [1, -1]) {
-			for (const len of lens) {
-				try {
-					const w = await eda.sch_PrimitiveWire.create([x, y, x + dir * len, y], net || undefined);
-					const id = w?.getState_PrimitiveId?.();
-					if (id)
-						return id;
-				}
-				catch { /* 换方向或长度重试 */ }
-			}
-		}
-		await sleep(150 * (round + 1)); // 等拓扑刷新后再来一轮
+/** 取当前图页全部导线；getAll() 不可用时退回「先取 ID 再批量取图元」 */
+async function getAllWires(): Promise<any[]> {
+	try {
+		const all: any = await eda.sch_PrimitiveWire.getAll();
+		if (Array.isArray(all))
+			return all;
 	}
-	return undefined;
+	catch { /* 退回到 ID 路线 */ }
+
+	const ids: string[] = (await eda.sch_PrimitiveWire.getAllPrimitiveId()) ?? [];
+	return ids.length ? ((await eda.sch_PrimitiveWire.get(ids)) ?? []) : [];
+}
+
+/** 回读网络标签的文字 */
+async function readLabelValue(id: string): Promise<string | undefined> {
+	try {
+		const a: any = await eda.sch_PrimitiveAttribute.get(id);
+		return a?.getState_Value?.();
+	}
+	catch {
+		return undefined;
+	}
+}
+
+/**
+ * 找当前图页上「名字 == oldNet」的网络标签
+ *
+ * PCB 里的网络名与原理图未修改前的网络名完全一致，直接按名称精确匹配：
+ * key 或 value 任一等于旧网络名即算命中（不同版本网络标签把名字放在 key 或 value 上）。
+ * 不做归一化、不做位置匹配；器件属性也一并参与匹配（有子图元标记，仅用于诊断展示）。
+ */
+async function findNetLabels(oldNet: string): Promise<{ hits: any[]; diag: string }> {
+	if (!oldNet)
+		return { hits: [], diag: '没有原网络名' };
+
+	let ids: string[] = [];
+	try {
+		ids = (await eda.sch_PrimitiveAttribute.getAllPrimitiveId()) ?? [];
+	}
+	catch (e: any) {
+		return { hits: [], diag: `取属性列表失败：${String(e?.message ?? e)}` };
+	}
+	if (!ids.length)
+		return { hits: [], diag: '当前图页没有属性图元' };
+
+	let attrs: any[] = [];
+	try {
+		attrs = (await eda.sch_PrimitiveAttribute.get(ids)) ?? [];
+	}
+	catch (e: any) {
+		return { hits: [], diag: `读属性失败：${String(e?.message ?? e)}` };
+	}
+
+	const keyOf = (a: any) => String(a.getState_Key?.() ?? '');
+	const valOf = (a: any) => String(a.getState_Value?.() ?? '');
+
+	const hits = attrs.filter((a: any) => keyOf(a) === oldNet || valOf(a) === oldNet);
+
+	// 没命中时把本页属性摘要带出去，便于判断标签到底长什么样
+	const sample = attrs.slice(0, 6)
+		.map(a => `${keyOf(a) || '?'}=${valOf(a) || '?'}${a.getState_ParentPrimitiveId?.() ? '(子)' : ''}`)
+		.join('；');
+	const diag = `本页属性 ${attrs.length} 个${sample ? `：${sample}` : ''}`;
+
+	return { hits, diag };
 }
 
 /**
