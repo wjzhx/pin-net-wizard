@@ -1,4 +1,4 @@
-# 引脚改网向导（Pin Net Wizard）
+# PCB焊盘改网络（Pin Net Wizard）
 
 嘉立创EDA专业版扩展 · 在 PCB 中选中引脚，按 <kbd>F8</kbd> 拾取目标网络，一键改写原理图网络名，写完自动切回 PCB。
 
@@ -201,7 +201,28 @@
 
 ---
 
-## 十一、开源许可
+## 十一、源码与反馈
+
+| 用途 | 地址 |
+| --- | --- |
+| 项目源码 | <https://github.com/wjzhx/pin-net-wizard> |
+| 问题反馈 | <https://github.com/wjzhx/pin-net-wizard/issues> |
+| 更新日志 | [CHANGELOG.md](./CHANGELOG.md) |
+
+欢迎提 Issue 反馈问题或建议，也欢迎提交 PR。
+
+参与开发：
+
+```shell
+git clone https://github.com/wjzhx/pin-net-wizard.git
+cd pin-net-wizard
+npm install
+npm run build      # 产物：build/dist/pin-net-wizard_vX.X.X.eext
+```
+
+---
+
+## 十二、开源许可
 
 本扩展基于 [Apache License 2.0](./LICENSE) 发布。
 

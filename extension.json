@@ -11,7 +11,7 @@
 	"license": "Apache-2.0",
 	"repository": {
 		"type": "git",
-		"url": ""
+		"url": "https://github.com/wjzhx/pin-net-wizard.git"
 	},
 	"categories": [
 		"PCB"
@@ -27,8 +27,8 @@
 	"images": {
 		"logo": "./images/logo.png"
 	},
-	"homepage": "",
-	"bugs": "",
+	"homepage": "https://github.com/wjzhx/pin-net-wizard#readme",
+	"bugs": "https://github.com/wjzhx/pin-net-wizard/issues",
 	"activationEvents": {},
 	"entry": "./dist/index",
 	"dependentExtensions": {},
