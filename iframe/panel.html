@@ -46,6 +46,16 @@
   .netbig.empty { color:var(--muted); font-size:13px; font-weight:400; }
   .log { margin-top:10px; max-height:170px; overflow:auto; background:#f8fafc; border:1px solid var(--line); border-radius:6px; padding:8px; font-size:12px; white-space:pre-wrap; }
   .ok{color:var(--ok)} .err{color:var(--danger)} .wn{color:var(--warn)}
+  /* 逐行确认框 */
+  .cbox { border:1px solid #fcd34d; background:#fff; border-radius:6px; padding:8px 10px; margin-top:6px; }
+  .cbox.resolved { border-color:var(--line); background:#fafafa; }
+  /* 定位簇：整行平铺、按钮放大，点哪一簇一目了然 */
+  .jumpbar { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:6px; margin:8px 0 6px; }
+  .jumpbar button { padding:8px 10px; font-size:12.5px; font-weight:600; line-height:1.35; color:#92400e;
+                    background:#fef3c7; border:1px solid #fcd34d; border-radius:7px; text-align:left; }
+  .jumpbar button:hover { background:#fde68a; }
+  .jumpbar button span { display:block; margin-top:2px; font-weight:400; font-size:11px; opacity:.85;
+                         white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 </style>
 </head>
 <body>
@@ -87,6 +97,15 @@
     <div class="row">
       <button class="primary big" id="btn-apply" disabled>写入原理图</button>
       <button id="btn-clear" disabled>清空</button>
+    </div>
+
+    <!-- 多元件共享网络：写入前逐行二次确认 -->
+    <div id="confirmBox" style="display:none;margin-top:8px;border:1px solid var(--amber);border-radius:8px;padding:10px;background:#fffbeb">
+      <div id="confirmText" style="font-weight:600;color:#92400e"></div>
+      <div id="confirmRows"></div>
+      <div class="row">
+        <button id="btn-confirm-skipall">全部跳过</button>
+      </div>
     </div>
   </div>
 
@@ -181,6 +200,12 @@ setInterval(async () => {
     const r = await call2('poll', null);
     const events = (r && r.events) || [];
     for (const e of events) {
+      // 写入过程中的实时日志：宿主逐条投递，这里立刻打印
+      if (e.type === 'log') {
+        const cls = e.level === 'err' ? 'err' : e.level === 'wn' ? 'wn' : e.level === 'ok' ? 'ok' : '';
+        log(esc(e.text || ''), cls);
+        continue;
+      }
       if (e.type !== 'pick') continue;
       if (Date.now() - lastPickAt < 500) continue;
       lastPickAt = Date.now();
@@ -301,6 +326,8 @@ function renderQueue() {
 
 $('btn-clear').onclick = () => {
   Q = [];
+  PENDING = null;
+  $('confirmBox').style.display = 'none';
   renderQueue();
   log('已清空待写入队列。', 'wn');
 };
@@ -410,7 +437,168 @@ function updateNetShow() {
   }
 }
 
-/* ---- 写入（单组 / 多组统一走批量接口） ---- */
+/* ---- 写入（单组 / 多组统一走批量接口，多元件共享网络先二次确认） ---- */
+let PENDING = null; // { tasks, base }：等待用户确认的组
+
+/* 把「导线连通簇」拼成一行文字：簇1（3 段导线）：R199.2、Q29.1；簇2（1 段导线）：D28.1 */
+function clusterText(x) {
+  const cs = (x && x.clusters) || [];
+  return cs.map((c, i) => `簇${i + 1}（${c.wireCount || 0} 段导线）：${(c.pins || []).join('、') || '无引脚'}`).join('；');
+}
+
+function logResults(results) {
+  for (const x of results || []) {
+    const head = `${x.row ? `#${x.row} ` : ''}${x.designator}.${x.padNumber} → ${x.net}`;
+    if (x.error) { log(`✗ ${head}：${x.error}`, 'err'); continue; }
+    if (x.needsConfirm) {
+      const ct = clusterText(x);
+      log(`! ${head}：${esc(x.reason || '需要确认')}${ct ? `　｜　${esc(ct)}` : ''}`, 'wn');
+      continue;
+    }
+    if (x.skipped) { log(`− ${head}：跳过（${x.reason || '没有可修改的网络标签'}）`, 'wn'); continue; }
+    log(`✓ ${head}：网络标签改名 ${x.netBefore || '空'} → ${x.net}${x.matched ? '' : '；回读与目标不一致'}`, x.matched ? 'ok' : 'wn');
+    if (x.note) log(`    ${x.note}`, 'wn');
+  }
+}
+
+function finalize(stats) {
+  const ok = stats.ok || 0;
+  const skip = stats.skip || 0;
+  const fail = stats.fail || 0;
+  const total = ok + skip + fail;
+
+  if (!stats.changed) log('本次没有任何改动（全部跳过），原理图未修改。', 'wn');
+  else log(stats.saved ? '原理图已统一保存。' : '注意：原理图保存失败，请手动保存。', stats.saved ? 'ok' : 'wn');
+  if (stats.stayed) log('仍停留在原理图页面。', 'wn');
+  else log(stats.switchedBack ? '已切回 PCB 页面。' : '写入完成，但自动切回 PCB 失败，请手动点一下 PCB 标签页。', stats.switchedBack ? 'ok' : 'wn');
+
+  const suffix = (skip ? `，跳过 ${skip}` : '') + (fail ? `，失败 ${fail}` : '');
+  mark('b2', `成功 ${ok}/${total}${skip ? ` 跳过 ${skip}` : ''}`, fail ? 'bad' : 'ok');
+  stepCls('s2', ok ? 'done' : '');
+
+  $('confirmBox').style.display = 'none';
+  $('confirmRows').innerHTML = '';
+  PENDING = null;
+  Q = [];
+  renderQueue();
+  resetCurrent();
+  stepCls('s1', 'active');
+  tip('done', `<span class="no">✓</span>成功 ${ok}/${total}${suffix}`
+    + `<small>继续改网请选中下一个引脚，按 F8</small>`);
+  mark('b1', '可继续下一个', 'ok');
+}
+
+function askConfirm(pend) {
+  $('confirmText').textContent = `以下 ${pend.length} 行网络关联的引脚超过 2 个，或同名网络被分成多组互不相连的导线，`
+    + `改名会整网同步。可先点「跳到簇」逐组核对，再逐行确认：`;
+  $('confirmRows').innerHTML = pend.map((x, i) => `
+    <div class="cbox" data-i="${i}">
+      <div style="font-weight:600">#${x.row || i + 1} ${esc(`${x.designator}.${x.padNumber}`)} → ${esc(x.net)}</div>
+      <div style="font-size:12px;color:#92400e;margin:4px 0">${esc(x.reason || '')}</div>
+      ${clusterText(x) ? `<div style="font-size:12px;color:#92400e;margin:4px 0">${esc(clusterText(x))}</div>` : ''}
+      ${(x.clusters && x.clusters.length) ? `<div class="jumpbar">${x.clusters.map((c, j) => `<button data-act="jump" data-i="${i}" data-c="${j}" title="${esc((c.pins || []).join('、') || '无引脚')}">跳到簇${j + 1}（${c.wireCount || 0} 段导线）<span>${esc((c.pins || []).join('、') || '无引脚')}</span></button>`).join('')}</div>` : ''}
+      <div class="row" style="margin-top:0">
+        <button class="primary" data-act="yes">确认本行改名</button>
+        <button data-act="no">跳过本行</button>
+        <span class="note" data-role="state" style="margin:0"></span>
+      </div>
+    </div>`).join('');
+  $('confirmBox').style.display = '';
+  $('confirmRows').querySelectorAll('.cbox').forEach((el) => {
+    const i = Number(el.dataset.i);
+    el.querySelector('[data-act="yes"]').onclick = () => resolveRow(i, true);
+    el.querySelector('[data-act="no"]').onclick = () => resolveRow(i, false);
+  });
+  $('confirmRows').querySelectorAll('[data-act="jump"]').forEach((el) => {
+    el.onclick = () => jumpCluster(Number(el.dataset.i), Number(el.dataset.c));
+  });
+  mark('b2', `待确认 ${pend.length} 行`, 'wn');
+}
+
+/* 跳到某个导线连通簇：定位并缩放 + 选中，方便确认这一簇到底连了哪些元件 */
+async function jumpCluster(i, j) {
+  const row = PENDING && PENDING.rows[i];
+  const c = row && (row.clusters || [])[j];
+  if (!c) { log('该簇没有可定位的导线', 'wn'); return; }
+  const r = await call2('focusCluster', { wireIds: c.wireIds || [], x: c.x, y: c.y, bounds: c.bounds });
+  // 定位成功不写日志；只有真正出错时才提示
+  if (r && r.error) log(`定位失败：${r.error}`, 'err');
+}
+
+function rowState(i, text, cls) {
+  const el = $('confirmRows').querySelector(`.cbox[data-i="${i}"]`);
+  if (!el) return;
+  el.classList.add('resolved');
+  // 「跳到簇」按钮保留可用：结果出来后再看一眼也不该被锁住
+  el.querySelectorAll('button:not([data-act="jump"])').forEach((b) => { b.disabled = true; });
+  const s = el.querySelector('[data-role="state"]');
+  if (s) { s.textContent = text; s.className = 'note ' + (cls || ''); }
+}
+
+/* 单行确认：只写这一行，写完仍留在原理图，等所有行处理完再统一切回 PCB */
+async function resolveRow(i, yes) {
+  if (!PENDING || !PENDING.rows[i] || PENDING.rows[i].done) return;
+  const row = PENDING.rows[i];
+  row.done = true;
+  const head = `#${row.row} ${row.task.designator}.${row.task.padNumber} → ${row.task.net}`;
+
+  if (!yes) {
+    rowState(i, '已跳过', 'wn');
+    log(`− ${head}：按你的选择跳过（原网络 ${row.task.fromNet || '空'} 保持不动）`, 'wn');
+    PENDING.skip++;
+    maybeFinish();
+    return;
+  }
+
+  rowState(i, '写入中…');
+  const r = await call2('applyBatch', { tasks: [row.task], confirmMulti: true, stayInSchematic: true });
+  if (r.error) {
+    log(`✗ ${head}：${r.error}`, 'err');
+    rowState(i, '失败', 'err');
+    PENDING.fail++;
+    maybeFinish();
+    return;
+  }
+
+  logResults(r.results);
+  const res = (r.results || [])[0] || {};
+  PENDING.ok += r.okCount || 0;
+  PENDING.skip += r.skipCount || 0;
+  PENDING.fail += r.failCount || 0;
+  PENDING.wrote = PENDING.wrote || !!r.changed;
+  if (r.saved) PENDING.saved = true;
+  rowState(i, res.error ? '失败' : (res.skipped ? '已跳过' : '已改名'), res.error ? 'err' : (res.skipped ? 'wn' : 'ok'));
+  if (res.note) log(`    ${res.note}`, 'wn');
+  maybeFinish();
+}
+
+async function maybeFinish() {
+  if (!PENDING || PENDING.rows.some((r) => !r.done)) return;
+  const p = PENDING;
+  PENDING = null;
+
+  let switchedBack = false;
+  if (p.wrote) {
+    const back = await call2('backToPcb');
+    switchedBack = !!(back && back.switchedBack);
+  }
+
+  finalize({
+    ok: (p.base.okCount || 0) + p.ok,
+    skip: (p.base.skipCount || 0) + p.skip,
+    fail: (p.base.failCount || 0) + p.fail,
+    changed: !!(p.base.changed || p.wrote),
+    saved: p.base.saved || p.saved,
+    switchedBack,
+    stayed: !p.wrote,
+  });
+}
+
+$('btn-confirm-skipall').onclick = () => {
+  if (!PENDING) return;
+  PENDING.rows.forEach((row, i) => { if (!row.done) resolveRow(i, false); });
+};
+
 $('btn-apply').onclick = async () => {
   if (!Q.length) return;
   const tasks = Q.map((t) => ({ designator: t.designator, padNumber: t.padNumber, net: t.net, fromNet: t.fromNet || '' }));
@@ -427,33 +615,36 @@ $('btn-apply').onclick = async () => {
     return;
   }
 
-  for (const x of r.results || []) {
-    const head = `${x.designator}.${x.padNumber} → ${x.net}`;
-    if (x.error) {
-      log(`✗ ${head}：${x.error}`, 'err');
-      continue;
+  logResults(r.results);
+
+  const pend = (r.results || []).filter((x) => x.needsConfirm);
+  if (pend.length) {
+    PENDING = {
+      base: r,
+      rows: pend.map((x) => ({
+        row: x.row || 0,
+        task: { designator: x.designator, padNumber: x.padNumber, net: x.net, fromNet: x.netBefore || x.fromNet || '' },
+        clusters: x.clusters || [],
+        done: false,
+      })),
+      ok: 0,
+      skip: 0,
+      fail: 0,
+      wrote: false,
+      saved: false,
+    };
+    if (r.okCount) log(`已写入 ${r.okCount} 组，剩余 ${pend.length} 行等待确认。`, 'wn');
+    if (r.changed) log(r.saved ? '原理图已统一保存。' : '注意：原理图保存失败，请手动保存。', r.saved ? 'ok' : 'wn');
+    if (r.stayedInSchematic) {
+      const f = r.focus || {};
+      log(`已停留在原理图${f.designator ? `（${f.designator}.${f.padNumber}）` : ''}，`
+        + `${f.zoomed ? '并已定位到待修改的网络标签' : '但自动定位失败，请手动查看'}；逐行处理完会自动切回 PCB。`, 'ok');
     }
-    if (x.skipped) {
-      log(`− ${head}：跳过（${x.reason || '没有可修改的网络标签'}）`, 'wn');
-      continue;
-    }
-    log(`✓ ${head}：网络标签改名 ${x.netBefore || '空'} → ${x.net}${x.matched ? '' : '；回读与目标不一致'}`, x.matched ? 'ok' : 'wn');
+    askConfirm(pend);
+    return; // 队列保留，等用户逐行确认
   }
-  if (!r.changed) log('本次没有任何改动（全部跳过），原理图未修改。', 'wn');
-  else log(r.saved ? '原理图已统一保存。' : '注意：原理图保存失败，请手动保存。', r.saved ? 'ok' : 'wn');
-  log(r.switchedBack ? '已切回 PCB 页面。' : '写入完成，但自动切回 PCB 失败，请手动点一下 PCB 标签页。', r.switchedBack ? 'ok' : 'wn');
 
-  const suffix = (r.skipCount ? `，跳过 ${r.skipCount}` : '') + (r.failCount ? `，失败 ${r.failCount}` : '');
-  mark('b2', `成功 ${r.okCount}/${r.total}${r.skipCount ? ` 跳过 ${r.skipCount}` : ''}`, r.failCount ? 'bad' : 'ok');
-  stepCls('s2', r.okCount ? 'done' : '');
-
-  Q = [];
-  renderQueue();
-  resetCurrent();
-  stepCls('s1', 'active');
-  tip('done', `<span class="no">✓</span>成功 ${r.okCount}/${r.total}${suffix}`
-    + `<small>继续改网请选中下一个引脚，按 F8</small>`);
-  mark('b1', '可继续下一个', 'ok');
+  finalize({ ok: r.okCount, skip: r.skipCount, fail: r.failCount, changed: r.changed, saved: r.saved, switchedBack: r.switchedBack });
 };
 
 renderQueue();
